@@ -32,11 +32,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve image name
+        id: image
+        # 按当前仓库（owner/repo）推送镜像，fork 时才不会尝试写入上游命名空间的包；
+        # GHCR 要求镜像名全小写，而 github.repository 保留 owner 原始大小写，故这里统一转小写。
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/jungley8/subconverter-ng
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
