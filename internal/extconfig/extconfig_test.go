@@ -107,6 +107,42 @@ func TestParseIntervalPartial(t *testing.T) {
 	}
 }
 
+// 规则来源格式、刷新间隔与 inline 逗号必须各自保留其语义。
+func TestParseRulesetFormatAndInterval(t *testing.T) {
+	tests := []struct {
+		name, rhs, url, inline, format string
+		interval                       int
+	}{
+		{name: "默认远程", rhs: "https://example.com/a.list", url: "https://example.com/a.list", interval: 86400},
+		{name: "Surge", rhs: "surge:https://example.com/a.list,300", url: "https://example.com/a.list", format: "surge", interval: 300},
+		{name: "QuanX", rhs: "quanx:https://example.com/a.list", url: "https://example.com/a.list", format: "quanx", interval: 86400},
+		{name: "Clash经典", rhs: "clash-classic:https://example.com/a.yaml,600", url: "https://example.com/a.yaml", format: "clash-classic", interval: 600},
+		{name: "Clash域名", rhs: "clash-domain:https://example.com/a.yaml,0", url: "https://example.com/a.yaml", format: "clash-domain"},
+		{name: "Clash网段", rhs: "clash-ipcidr:https://example.com/a.yaml,123", url: "https://example.com/a.yaml", format: "clash-ipcidr", interval: 123},
+		{name: "最后逗号", rhs: "https://example.com/a,b.list, 900 ", url: "https://example.com/a,b.list", interval: 900},
+		{name: "非数字间隔", rhs: "https://example.com/a.list,invalid", url: "https://example.com/a.list"},
+		{name: "空间隔", rhs: "https://example.com/a.list,", url: "https://example.com/a.list"},
+		{name: "溢出间隔", rhs: "https://example.com/a.list,999999999999999999999999999", url: "https://example.com/a.list"},
+		{name: "未知格式", rhs: "unknown:https://example.com/a.list,30", url: "unknown:https://example.com/a.list", format: "unknown", interval: 30},
+		{name: "仅识别小写", rhs: "SURGE:https://example.com/a.list", url: "SURGE:https://example.com/a.list", format: "SURGE", interval: 86400},
+		{name: "HTTP协议", rhs: "http://example.com/a.list", url: "http://example.com/a.list", interval: 86400},
+		{name: "inline不拆尾", rhs: "[]GEOIP,CN,no-resolve", inline: "GEOIP,CN,no-resolve"},
+		{name: "inline数字参数", rhs: "[]DST-PORT,443", inline: "DST-PORT,443"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Parse([]byte("ruleset=目标," + tt.rhs))
+			if len(cfg.Rulesets) != 1 {
+				t.Fatalf("规则集数量 = %d，期望 1", len(cfg.Rulesets))
+			}
+			want := Ruleset{Group: "目标", URL: tt.url, Inline: tt.inline, Format: tt.format, Interval: tt.interval}
+			if got := cfg.Rulesets[0]; got != want {
+				t.Errorf("规则集 = %+v，期望 %+v", got, want)
+			}
+		})
+	}
+}
+
 func TestBoolVal(t *testing.T) {
 	for _, on := range []string{"true", "1", "yes", "ON"} {
 		if !boolVal(on) {

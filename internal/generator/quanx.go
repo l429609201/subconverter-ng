@@ -57,7 +57,10 @@ func GenerateQuanX(ctx context.Context, nodes []*proxy.Proxy, cfg *extconfig.Con
 		b.WriteByte('\n')
 	}
 
-	neutral, skippedRules := collectRules(ctx, cfg, f, opts)
+	neutral, skippedRules, err := collectRules(ctx, cfg, f, opts)
+	if err != nil {
+		return nil, err
+	}
 	b.WriteString("\n[filter_local]\n")
 	for _, r := range neutral {
 		if line, ok := formatQuanXRule(r); ok {

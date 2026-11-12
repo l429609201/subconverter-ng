@@ -755,7 +755,10 @@ func TestCollectRules_SemaphoreConcurrency(t *testing.T) {
 		})
 	}
 	tracker := &concurrencyTrackingFetcher{}
-	rules, _ := collectRules(context.Background(), cfg, tracker, Options{})
+	rules, _, err := collectRules(context.Background(), cfg, tracker, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(rules) != 32 {
 		t.Fatalf("expected 32 rules, got %d", len(rules))
 	}

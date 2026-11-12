@@ -24,9 +24,11 @@ import (
 
 // Ruleset is one ruleset= entry. Exactly one of URL or Inline is set.
 type Ruleset struct {
-	Group  string
-	URL    string // remote .list to fetch and expand
-	Inline string // inline rule body with the leading "[]" stripped (e.g. "GEOIP,CN", "FINAL")
+	Group    string
+	URL      string // remote ruleset to fetch and expand
+	Inline   string // inline rule body with the leading "[]" stripped (e.g. "GEOIP,CN", "FINAL")
+	Format   string // 空值默认 Surge；已知格式为 surge/quanx/clash-classic/clash-domain/clash-ipcidr，未知前缀原样保留供解析器报错。
+	Interval int    // 远程规则默认 86400 秒；显式非数字间隔按源契约记为 0。
 }
 
 // ProxyGroup is one custom_proxy_group= entry.
@@ -148,10 +150,34 @@ func parseRuleset(val string) (Ruleset, bool) {
 	if group == "" || rhs == "" {
 		return Ruleset{}, false
 	}
+	// inline 中的逗号属于规则参数，不能当作刷新间隔拆分。
 	if strings.HasPrefix(rhs, "[]") {
 		return Ruleset{Group: group, Inline: rhs[2:]}, true
 	}
-	return Ruleset{Group: group, URL: rhs}, true
+	r := Ruleset{Group: group, URL: rhs, Interval: 86400}
+	if i := strings.LastIndexByte(r.URL, ','); i >= 0 {
+		// 源配置取最后一个逗号后的间隔，转换失败（含溢出）统一为 0。
+		interval, err := strconv.Atoi(strings.TrimSpace(r.URL[i+1:]))
+		if err == nil {
+			r.Interval = interval
+		} else {
+			r.Interval = 0
+		}
+		r.URL = strings.TrimSpace(r.URL[:i])
+	}
+	if prefix, rest, ok := strings.Cut(r.URL, ":"); ok {
+		switch prefix {
+		case "surge", "quanx", "clash-classic", "clash-domain", "clash-ipcidr":
+			r.Format = prefix
+			r.URL = strings.TrimSpace(rest)
+		default:
+			// HTTP(S) 是地址协议而非格式；未知格式保留前缀和原地址，避免被当作 Surge 静默接受。
+			if prefix != "http" && prefix != "https" {
+				r.Format = prefix
+			}
+		}
+	}
+	return r, true
 }
 
 // parseProxyGroup parses the backtick-delimited custom_proxy_group format,

@@ -14,6 +14,7 @@ package generator
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -283,17 +284,18 @@ var tailscaleRules = []Rule{
 // inline rulesets ([]GEOIP,CN, []FINAL) are expanded directly. Entries with an
 // unsupported rule type are returned in skipped instead of rules.
 // When opts.Tailscale is true, Tailscale direct rules are prepended.
-func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Options) (rules []Rule, skipped []string) {
+func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Options) (rules []Rule, skipped []string, err error) {
 	var tsRules []Rule
 	if opts.Tailscale {
 		tsRules = append(tsRules, tailscaleRules...)
 	}
 	if !cfg.EnableRuleGenerator {
-		return tsRules, nil
+		return tsRules, nil, nil
 	}
 	type fetched struct {
 		rules   []Rule
 		skipped []string
+		err     error
 	}
 	results := make([]fetched, len(cfg.Rulesets))
 	const maxConcurrentRulesetFetches = 16
@@ -310,13 +312,15 @@ func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Op
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
+				results[i].err = ctx.Err()
 				return
 			}
 			data, err := f.Get(ctx, url)
 			if err != nil {
+				results[i].err = err
 				return
 			}
-			results[i].rules, results[i].skipped = parseRemoteRuleset(data, group)
+			results[i].rules, results[i].skipped, results[i].err = parseRulesetContent(data, group, cfg.Rulesets[i].Format)
 		}(i, rs.URL, rs.Group)
 	}
 	wg.Wait()
@@ -330,10 +334,14 @@ func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Op
 			}
 			continue
 		}
+		// 必需规则集失败时拒绝生成缺失分流规则的配置；按声明顺序报告首个错误。
+		if results[i].err != nil {
+			return nil, nil, fmt.Errorf("规则集 %q 下载或解析失败: %w", rs.Group, results[i].err)
+		}
 		rules = append(rules, results[i].rules...)
 		skipped = append(skipped, results[i].skipped...)
 	}
-	return append(tsRules, rules...), skipped
+	return append(tsRules, rules...), skipped, nil
 }
 
 // parseInlineRule turns a []inline body into a neutral Rule. Types are kept

@@ -88,7 +88,10 @@ func generateSurgeFamily(ctx context.Context, flavor surgeFlavor, nodes []*proxy
 
 	// Rules: expand to neutral rules then format in Surge syntax, dropping types
 	// the family does not support.
-	neutral, skippedRules := collectRules(ctx, cfg, f, opts)
+	neutral, skippedRules, err := collectRules(ctx, cfg, f, opts)
+	if err != nil {
+		return nil, err
+	}
 	b.WriteString("\n[Rule]\n")
 	for _, r := range neutral {
 		if line, ok := formatSurgeRule(r); ok {

@@ -4,6 +4,7 @@ package generator
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -181,10 +182,18 @@ func GenerateClash(ctx context.Context, nodes []*proxy.Proxy, cfg *extconfig.Con
 	var rules []string
 	var providers map[string]any
 	if opts.UseRuleProviders {
-		rules, providers, res.SkippedRules = buildRuleProviders(cfg, opts)
+		var err error
+		rules, providers, res.SkippedRules, err = buildRuleProviders(cfg, opts)
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		var skippedRules []string
-		rules, skippedRules = buildRules(ctx, cfg, f, opts)
+		var err error
+		rules, skippedRules, err = buildRules(ctx, cfg, f, opts)
+		if err != nil {
+			return nil, err
+		}
 		res.SkippedRules = skippedRules
 	}
 
@@ -466,8 +475,11 @@ func resolveSelectors(selectors []string, nodes []*proxy.Proxy, allNames []strin
 // buildRules expands all rulesets in declared order into Clash rule lines. The
 // concurrent fetch + neutral parsing lives in collectRules (common.go); this
 // just formats each neutral Rule as a Clash rule string.
-func buildRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Options) (rules, skipped []string) {
-	neutral, skipped := collectRules(ctx, cfg, f, opts)
+func buildRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Options) (rules, skipped []string, err error) {
+	neutral, skipped, err := collectRules(ctx, cfg, f, opts)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, r := range neutral {
 		if line, ok := formatClashRule(r); ok {
 			rules = append(rules, line)
@@ -475,16 +487,12 @@ func buildRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Opti
 			skipped = append(skipped, r.Type+","+r.Value)
 		}
 	}
-	return rules, skipped
+	return rules, skipped, nil
 }
 
-// buildRuleProviders implements subconverter's expand=false output. Instead of
-// fetching and inlining every remote rule, it emits one Clash.Meta rule-provider
-// per distinct remote ruleset URL and a RULE-SET rule pointing each provider at
-// its group. Inline rulesets ([]GEOIP,CN, []FINAL) stay direct rules so MATCH
-// and inline matchers still work. Providers are deduped by URL: a URL reused
-// across groups yields one provider but a RULE-SET line per (provider,group).
-func buildRuleProviders(cfg *extconfig.Config, opts Options) (rules []string, providers map[string]any, skipped []string) {
+// buildRuleProviders 实现 expand=false：远程规则按 URL、格式和刷新间隔复用 provider，
+// 不同分组仍各自保留 RULE-SET。inline 规则直接输出，不参与 provider 去重。
+func buildRuleProviders(cfg *extconfig.Config, opts Options) (rules []string, providers map[string]any, skipped []string, err error) {
 	if opts.Tailscale {
 		rules = append(rules,
 			"IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
@@ -492,10 +500,16 @@ func buildRuleProviders(cfg *extconfig.Config, opts Options) (rules []string, pr
 		)
 	}
 	if !cfg.EnableRuleGenerator {
-		return rules, providers, nil
+		return rules, providers, nil, nil
 	}
-	providerByURL := map[string]string{} // url -> provider key
-	seenRuleSet := map[string]bool{}     // "provider\x00group" -> emitted
+	// 结构化键避免地址分隔符冲突；默认格式与显式 Surge 等价。
+	type providerKey struct {
+		url      string
+		format   string
+		interval int
+	}
+	providerNames := map[providerKey]string{}
+	seenRuleSet := map[string]bool{} // "provider\x00group" -> emitted
 	for _, rs := range cfg.Rulesets {
 		if rs.Inline != "" {
 			if rule, ok := expandInlineRule(rs.Inline, rs.Group); ok {
@@ -508,20 +522,40 @@ func buildRuleProviders(cfg *extconfig.Config, opts Options) (rules []string, pr
 		if rs.URL == "" {
 			continue
 		}
-		name, ok := providerByURL[rs.URL]
+		format := rs.Format
+		if format == "" {
+			format = "surge"
+		}
+		behavior, providerFormat, extension := "classical", "text", ".list"
+		switch format {
+		case "surge":
+			// 默认 Surge 列表继续使用兼容的 classical text provider。
+		case "clash-classic", "clash-domain", "clash-ipcidr":
+			providerFormat, extension = "yaml", ".yaml"
+			if format == "clash-domain" {
+				behavior = "domain"
+			} else if format == "clash-ipcidr" {
+				behavior = "ipcidr"
+			}
+		default:
+			// QuanX 不是 classical text；严格失败避免静默遗漏整个远程规则集。
+			return nil, nil, nil, fmt.Errorf("不支持的 rule-provider 格式 %q（地址 %q，分组 %q）", format, rs.URL, rs.Group)
+		}
+		identity := providerKey{url: rs.URL, format: format, interval: rs.Interval}
+		name, ok := providerNames[identity]
 		if !ok {
-			name = "provider_" + strconv.Itoa(len(providerByURL)+1)
-			providerByURL[rs.URL] = name
+			name = "provider_" + strconv.Itoa(len(providerNames)+1)
+			providerNames[identity] = name
 			if providers == nil {
 				providers = map[string]any{}
 			}
 			providers[name] = map[string]any{
 				"type":     "http",
-				"behavior": "classical",
+				"behavior": behavior,
 				"url":      rs.URL,
-				"path":     "./ruleset/" + name + ".list",
-				"interval": 86400,
-				"format":   "text",
+				"path":     "./ruleset/" + name + extension,
+				"interval": rs.Interval,
+				"format":   providerFormat,
 			}
 		}
 		key := name + "\x00" + rs.Group
@@ -531,7 +565,7 @@ func buildRuleProviders(cfg *extconfig.Config, opts Options) (rules []string, pr
 		seenRuleSet[key] = true
 		rules = append(rules, "RULE-SET,"+name+","+rs.Group)
 	}
-	return rules, providers, skipped
+	return rules, providers, skipped, nil
 }
 
 // validRuleTypes is the set of rule types Clash.Meta (mihomo) accepts. Rules
