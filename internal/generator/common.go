@@ -338,23 +338,46 @@ func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Op
 
 // parseInlineRule turns a []inline body into a neutral Rule. Types are kept
 // verbatim (target-neutral); ok is false only when the body is not rule-shaped
-// (a lone token that is neither FINAL nor MATCH).
+// (a lone token that is neither FINAL nor MATCH, or more than three fields).
 //
-//	FINAL      -> {Type: MATCH}
-//	GEOIP,CN   -> {Type: GEOIP, Value: CN}
-//	DOMAIN,x   -> {Type: DOMAIN, Value: x}
+//	FINAL                -> {Type: MATCH}
+//	GEOIP,CN             -> {Type: GEOIP, Value: CN}
+//	GEOIP,LAN,no-resolve -> {Type: GEOIP, Value: LAN, Flag: no-resolve}
 //
-// The body after the first comma is kept verbatim as Value (it may itself carry
-// a trailing flag), matching the legacy behaviour of appending the group last.
+// The body is split on EVERY comma (via ruleFromFields), so a trailing flag
+// such as no-resolve is parsed as Flag instead of leaking into Value. This is
+// what the original C++ transformRuleToCommon() does and what the remote
+// ruleset path has always done; splitting on only the first comma made the two
+// paths disagree and produced invalid "<type>,<value>,<flag>,<group>" lines.
 func parseInlineRule(body, group string) (Rule, bool) {
-	if strings.EqualFold(body, "FINAL") || strings.EqualFold(body, "MATCH") {
-		return Rule{Type: "MATCH", Group: group}, true
+	return ruleFromFields(strings.Split(strings.TrimSpace(body), ","), group)
+}
+
+// ruleFromFields builds a neutral Rule from already-split comma-separated rule
+// fields. It is the single source of truth shared by parseInlineRule and
+// parseRemoteRuleset so the inline and remote paths cannot drift again.
+// Fields are trimmed; a well-formed rule has one to three fields:
+//
+//	1: FINAL | MATCH
+//	2: TYPE,VALUE
+//	3: TYPE,VALUE,FLAG (e.g. no-resolve)
+//
+// Any other shape is not rule-shaped (ok=false).
+func ruleFromFields(fields []string, group string) (Rule, bool) {
+	for i := range fields {
+		fields[i] = strings.TrimSpace(fields[i])
 	}
-	typ, val, found := strings.Cut(body, ",")
-	if !found {
-		return Rule{}, false
+	switch len(fields) {
+	case 1: // bare keyword like FINAL/MATCH
+		if strings.EqualFold(fields[0], "FINAL") || strings.EqualFold(fields[0], "MATCH") {
+			return Rule{Type: "MATCH", Group: group}, true
+		}
+	case 2: // TYPE,VALUE
+		return Rule{Type: fields[0], Value: fields[1], Group: group}, true
+	case 3: // TYPE,VALUE,FLAG (e.g. no-resolve)
+		return Rule{Type: fields[0], Value: fields[1], Group: group, Flag: fields[2]}, true
 	}
-	return Rule{Type: typ, Value: val, Group: group}, true
+	return Rule{}, false
 }
 
 // parseRemoteRuleset parses an ACL4SSR-style .list file into neutral Rule
@@ -374,21 +397,12 @@ func parseRemoteRuleset(data []byte, group string) (out []Rule, skipped []string
 				continue
 			}
 		}
-		fields := strings.Split(line, ",")
-		for i := range fields {
-			fields[i] = strings.TrimSpace(fields[i])
-		}
-		switch len(fields) {
-		case 2: // TYPE,VALUE
-			out = append(out, Rule{Type: fields[0], Value: fields[1], Group: group})
-		case 3: // TYPE,VALUE,flag (e.g. no-resolve)
-			out = append(out, Rule{Type: fields[0], Value: fields[1], Group: group, Flag: fields[2]})
-		case 1: // bare keyword like FINAL/MATCH
-			if strings.EqualFold(fields[0], "FINAL") || strings.EqualFold(fields[0], "MATCH") {
-				out = append(out, Rule{Type: "MATCH", Group: group})
-			} else {
-				skipped = append(skipped, line)
-			}
+		// Shared field logic: 2 fields = TYPE,VALUE; 3 = TYPE,VALUE,FLAG;
+		// 1 = bare FINAL/MATCH. Anything else is not rule-shaped.
+		if r, ok := ruleFromFields(strings.Split(line, ","), group); ok {
+			out = append(out, r)
+		} else {
+			skipped = append(skipped, line)
 		}
 	}
 	return out, skipped

@@ -229,6 +229,20 @@ func TestExpandInlineRule(t *testing.T) {
 	if got, ok := expandInlineRule("GEOIP,CN", "G"); !ok || got != "GEOIP,CN,G" {
 		t.Errorf("GEOIP -> %q,%v", got, ok)
 	}
+	// Inline flags must render after the group, never before it (issue #20).
+	if got, ok := expandInlineRule("GEOIP,LAN,no-resolve", "G"); !ok || got != "GEOIP,LAN,G,no-resolve" {
+		t.Errorf("GEOIP flag -> %q,%v", got, ok)
+	}
+	if got, ok := expandInlineRule("IP-CIDR,10.0.0.0/8,no-resolve", "DIRECT"); !ok || got != "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve" {
+		t.Errorf("IP-CIDR flag -> %q,%v", got, ok)
+	}
+	// Fields are trimmed like the remote path; extra fields are not rule-shaped.
+	if got, ok := expandInlineRule("GEOIP, LAN, no-resolve", "G"); !ok || got != "GEOIP,LAN,G,no-resolve" {
+		t.Errorf("trimmed flag -> %q,%v", got, ok)
+	}
+	if _, ok := expandInlineRule("GEOIP,LAN,no-resolve,extra", "G"); ok {
+		t.Error("more than three inline fields should be rejected")
+	}
 	if _, ok := expandInlineRule("DIRECT-SUFFIX,x", "G"); ok {
 		t.Error("unsupported inline rule type should be rejected")
 	}

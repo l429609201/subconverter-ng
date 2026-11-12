@@ -157,6 +157,38 @@ func TestConvertRules(t *testing.T) {
 	}
 }
 
+// TestConvertInlineRuleFlag is the regression test for issue #20. An inline
+// ruleset written as []GEOIP,LAN,no-resolve used to render as
+// "GEOIP,LAN,no-resolve,DIRECT" (flag and group swapped), which Mihomo rejects
+// with "proxy [no-resolve] not found". The only correct output is
+// "GEOIP,LAN,DIRECT,no-resolve".
+func TestConvertInlineRuleFlag(t *testing.T) {
+	f := fakeFetcher{
+		"client/subscribe": sampleSubscription(),
+		"config.init": []byte(`[custom]
+ruleset=DIRECT,[]GEOIP,LAN,no-resolve
+enable_rule_generator=true
+`),
+	}
+	req := Request{
+		Target:    "clash",
+		SubURLs:   []string{"https://airport.example.com/api/v1/client/subscribe?token=x"},
+		ConfigURL: "https://github.com/x/config.init",
+	}
+	data, _, err := Run(context.Background(), f, req)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("output is not valid YAML: %v", err)
+	}
+	rules := toStrings(doc["rules"])
+	if len(rules) != 1 || rules[0] != "GEOIP,LAN,DIRECT,no-resolve" {
+		t.Fatalf("rules = %v, want [GEOIP,LAN,DIRECT,no-resolve]", rules)
+	}
+}
+
 // b64Sub wraps one or more node share-links into a base64 subscription body.
 func b64Sub(links ...string) []byte {
 	return []byte(base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n"))))

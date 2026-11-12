@@ -556,9 +556,9 @@ func isValidRuleType(typ string) bool {
 // Clash formatter over parseInlineRule). ok is false when the rule type is not
 // recognised by Clash.Meta.
 //
-//	FINAL      -> MATCH,<group>
-//	GEOIP,CN   -> GEOIP,CN,<group>
-//	DOMAIN,x   -> DOMAIN,x,<group>
+//	FINAL                -> MATCH,<group>
+//	GEOIP,CN             -> GEOIP,CN,<group>
+//	GEOIP,LAN,no-resolve -> GEOIP,LAN,<group>,no-resolve
 func expandInlineRule(body, group string) (string, bool) {
 	r, ok := parseInlineRule(body, group)
 	if !ok {
