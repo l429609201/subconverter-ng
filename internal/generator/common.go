@@ -324,6 +324,10 @@ func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Op
 		}(i, rs.URL, rs.Group)
 	}
 	wg.Wait()
+	// 请求取消仍应终止；单个远程源失败则只跳过该源，不能输出其半解析结果。
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 
 	for i, rs := range cfg.Rulesets {
 		if rs.Inline != "" {
@@ -334,9 +338,10 @@ func collectRules(ctx context.Context, cfg *extconfig.Config, f Fetcher, opts Op
 			}
 			continue
 		}
-		// 必需规则集失败时拒绝生成缺失分流规则的配置；按声明顺序报告首个错误。
+		// 失败项只进入诊断，不写入目标配置；其他规则及原有兜底规则保持顺序。
 		if results[i].err != nil {
-			return nil, nil, fmt.Errorf("规则集 %q 下载或解析失败: %w", rs.Group, results[i].err)
+			skipped = append(skipped, fmt.Sprintf("规则集 %q 下载或解析失败，已跳过: %v", rs.Group, results[i].err))
+			continue
 		}
 		rules = append(rules, results[i].rules...)
 		skipped = append(skipped, results[i].skipped...)

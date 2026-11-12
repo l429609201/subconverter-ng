@@ -32,15 +32,35 @@ func TestRunClassicalRulesetTemplate(t *testing.T) {
 	}
 }
 
-// 严格失败策略：各目标都不能将下载失败或损坏的规则集伪装成成功转换。
-func TestRunRejectsBrokenRulesets(t *testing.T) {
+// 远程源失败只略过该部分，保留有效规则、兜底规则并提供诊断。
+func TestRunSkipsBrokenRulesets(t *testing.T) {
 	for _, target := range []string{"clash", "surge", "loon", "quanx", "singbox"} {
-		for _, payload := range []string{"", "payload: not-a-list"} {
+		for _, payload := range []string{"", "payload: not-a-list", "payload: ['NOT-A-RULE,x']", "download-failure"} {
 			t.Run(target+"/"+payload, func(t *testing.T) {
-				f := fakeFetcher{"client/subscribe": sampleSubscription(), "template.ini": []byte("ruleset=DIRECT,clash-classic:https://rules.example/broken.yaml,28800\nruleset=DIRECT,[]FINAL\n"), "broken.yaml": []byte(payload)}
-				data, _, err := Run(context.Background(), f, Request{Target: target, SubURLs: []string{"https://airport.example/client/subscribe"}, ConfigURL: "https://config.example/template.ini"})
-				if err == nil || len(data) != 0 {
-					t.Fatalf("must reject broken ruleset: err=%v output=%q", err, data)
+				f := fakeFetcher{"client/subscribe": sampleSubscription(), "template.ini": []byte("ruleset=DIRECT,clash-classic:https://rules.example/broken.yaml,28800\nruleset=DIRECT,clash-classic:https://rules.example/good.yaml\nruleset=DIRECT,[]FINAL\n"), "broken.yaml": []byte(payload), "good.yaml": []byte("payload: ['DOMAIN,example.com']")}
+				if payload == "download-failure" {
+					delete(f, "broken.yaml")
+				}
+				data, diag, err := Run(context.Background(), f, Request{Target: target, SubURLs: []string{"https://airport.example/client/subscribe"}, ConfigURL: "https://config.example/template.ini"})
+				if err != nil || len(data) == 0 {
+					t.Fatalf("must preserve remaining configuration: err=%v output=%q", err, data)
+				}
+				if len(diag.SkippedRules) != 1 || !strings.Contains(diag.SkippedRules[0], "已跳过") {
+					t.Fatalf("missing diagnostic: %+v", diag)
+				}
+				if !strings.Contains(string(data), "example.com") || strings.Contains(string(data), "下载或解析失败") {
+					t.Fatalf("valid rule lost or diagnostic leaked: %s", data)
+				}
+				if target == "clash" {
+					var doc struct {
+						Rules []string `yaml:"rules"`
+					}
+					if err := yaml.Unmarshal(data, &doc); err != nil {
+						t.Fatal(err)
+					}
+					if strings.Join(doc.Rules, "\n") != "DOMAIN,example.com,DIRECT\nMATCH,DIRECT" {
+						t.Fatalf("unexpected rules: %v", doc.Rules)
+					}
 				}
 			})
 		}
