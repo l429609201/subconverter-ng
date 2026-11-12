@@ -532,9 +532,10 @@ func buildRuleProviders(cfg *extconfig.Config, opts Options) (rules []string, pr
 			// 默认 Surge 列表继续使用兼容的 classical text provider。
 		case "clash-classic", "clash-domain", "clash-ipcidr":
 			providerFormat, extension = "yaml", ".yaml"
-			if format == "clash-domain" {
+			switch format {
+			case "clash-domain":
 				behavior = "domain"
-			} else if format == "clash-ipcidr" {
+			case "clash-ipcidr":
 				behavior = "ipcidr"
 			}
 		default:
